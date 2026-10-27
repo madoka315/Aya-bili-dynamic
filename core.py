@@ -185,7 +185,14 @@ class Poller:
         os.replace(tmp, self.file)
 
     # ---------- 订阅管理 ----------
-    def subscribe(self, uid: str, gid: int, keywords: List[str]) -> Tuple[bool, str]:
+    def subscribe(self, uid: str, gid: int, keywords: List[str],
+                  owner: str = "", owner_name: str = "") -> Tuple[bool, str]:
+        """新增/更新群内订阅。
+
+        owner 为空串表示「群级关注」（群管理或 DEFAULT_SUBS 预置），普通用户
+        的关注会写入自己的 QQ 号。已存在的条目只更新关键词，不改变归属，
+        避免管理员重设关键词时把普通用户的关注"收走"。
+        """
         uid = str(uid)
         if not uid.isdigit():
             return False, "UID 应该是纯数字"
@@ -194,7 +201,14 @@ class Poller:
             sub = {"name": f"UID{uid}", "offset": None, "next_ts": 0.0,
                    "consec_empty": 0, "consec_error": 0, "groups": {}}
             self.state["subs"][uid] = sub
-        sub["groups"][str(gid)] = {"keywords": keywords}
+        group = sub["groups"].get(str(gid))
+        if group is None:
+            group = {}
+            sub["groups"][str(gid)] = group
+        group["keywords"] = keywords
+        # 老数据没有 owner 字段，按群级关注处理（只有群管理能取消）
+        group.setdefault("owner", owner)
+        group.setdefault("owner_name", owner_name)
         self.save()
         return True, sub["name"]
 
@@ -233,8 +247,35 @@ class Poller:
         for uid, sub in self.state["subs"].items():
             g = sub["groups"].get(str(gid))
             if g:
-                out.append({"uid": uid, "name": sub["name"], "keywords": g["keywords"]})
+                out.append({
+                    "uid": uid,
+                    "name": sub["name"],
+                    "keywords": g.get("keywords") or [],
+                    "owner": g.get("owner", ""),
+                    "owner_name": g.get("owner_name", ""),
+                })
         return out
+
+    def get_sub(self, gid: int, uid: str) -> Optional[dict]:
+        """取群内单条订阅（含归属），不存在返回 None。"""
+        sub = self.state["subs"].get(str(uid))
+        if not sub:
+            return None
+        g = sub["groups"].get(str(gid))
+        if g is None:
+            return None
+        return {
+            "uid": str(uid),
+            "name": sub["name"],
+            "keywords": g.get("keywords") or [],
+            "owner": g.get("owner", ""),
+            "owner_name": g.get("owner_name", ""),
+        }
+
+    def list_user(self, gid: int, user_id) -> List[dict]:
+        """某成员在本群自己添加的关注（归属为本人）。"""
+        uid = str(user_id)
+        return [r for r in self.list_group(gid) if r["owner"] == uid]
 
     def group_uids(self, gid: int) -> List[str]:
         return [uid for uid, sub in self.state["subs"].items() if str(gid) in sub["groups"]]
